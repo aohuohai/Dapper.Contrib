@@ -9,6 +9,7 @@ using System.Reflection.Emit;
 using System.Threading;
 
 using Dapper;
+using Dapper.Contrib;
 
 namespace Dapper.Contrib.Extensions
 {
@@ -176,7 +177,9 @@ namespace Dapper.Contrib.Extensions
                 var key = GetSingleKey<T>(nameof(Get));
                 var name = GetTableName(type);
 
-                sql = $"select * from {name} where {key.Name} = @id";
+                //sql = $"select * from {name} where {key.Name} = @id";
+                // hack sql Get
+                sql = $"select * from {name} where {ColumnMapping.ColumnName(key.Name)} = @id";
                 GetQueries[type.TypeHandle] = sql;
             }
 
@@ -196,7 +199,9 @@ namespace Dapper.Contrib.Extensions
 
                 foreach (var property in TypePropertiesCache(type))
                 {
-                    var val = res[property.Name];
+                    //var val = res[property.Name];
+                    // hack property.Name Get
+                    var val = res[ColumnMapping.ColumnName(property.Name)];
                     if (val == null) continue;
                     if (property.PropertyType.IsGenericType && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
                     {
@@ -252,7 +257,9 @@ namespace Dapper.Contrib.Extensions
                 var obj = ProxyGenerator.GetInterfaceProxy<T>();
                 foreach (var property in TypePropertiesCache(type))
                 {
-                    var val = res[property.Name];
+                    //var val = res[property.Name];
+                    // hack property.Name GetAll
+                    var val = res[ColumnMapping.ColumnName(property.Name)];
                     if (val == null) continue;
                     if (property.PropertyType.IsGenericType && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
                     {
@@ -354,7 +361,9 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
             {
                 var property = allPropertiesExceptKeyAndComputed[i];
-                adapter.AppendColumnName(sbColumnList, property.Name);  //fix for issue #336
+                //adapter.AppendColumnName(sbColumnList, property.Name);  //fix for issue #336
+                //hack property.Name Insert
+                adapter.AppendColumnName(sbColumnList, ColumnMapping.ColumnName(property.Name));  //fix for issue #336
                 if (i < allPropertiesExceptKeyAndComputed.Count - 1)
                     sbColumnList.Append(", ");
             }
@@ -363,7 +372,9 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
             {
                 var property = allPropertiesExceptKeyAndComputed[i];
-                sbParameterList.AppendFormat("@{0}", property.Name);
+                //sbParameterList.AppendFormat("@{0}", property.Name);
+                //hack property.Name Insert
+                sbParameterList.AppendFormat("@{0}", ColumnMapping.ColumnName(property.Name));
                 if (i < allPropertiesExceptKeyAndComputed.Count - 1)
                     sbParameterList.Append(", ");
             }
@@ -375,13 +386,96 @@ namespace Dapper.Contrib.Extensions
             if (!isList)    //single entity
             {
                 returnVal = adapter.Insert(connection, transaction, commandTimeout, name, sbColumnList.ToString(),
-                    sbParameterList.ToString(), keyProperties, entityToInsert);
+                    sbParameterList.ToString(), keyProperties, ColumnMapping.PascalCaseToSnakeCaseForEntity(entityToInsert));
             }
             else
             {
                 //insert list of entities
                 var cmd = $"insert into {name} ({sbColumnList}) values ({sbParameterList})";
-                returnVal = connection.Execute(cmd, entityToInsert, transaction, commandTimeout);
+                returnVal = connection.Execute(cmd, ColumnMapping.PascalCaseToSnakeCaseForEntity(entityToInsert), transaction, commandTimeout);
+            }
+            if (wasClosed) connection.Close();
+            return returnVal;
+        }
+
+        /// <summary>
+        /// Inserts an entity(NonNull properties) into table "Ts" and returns identity id or number of inserted rows if inserting a list.
+        /// </summary>
+        /// <typeparam name="T">The type to insert.</typeparam>
+        /// <param name="connection">Open SqlConnection</param>
+        /// <param name="entityToInsert">Entity to insert, can be list of entities</param>
+        /// <param name="transaction">The transaction to run under, null (the default) if none</param>
+        /// <param name="commandTimeout">Number of seconds before command execution timeout</param>
+        /// <returns>Identity of inserted entity, or number of inserted rows if inserting a list</returns>
+        public static long InsertNonNull<T>(this IDbConnection connection, T entityToInsert, IDbTransaction transaction = null, int? commandTimeout = null) where T : class
+        {
+            var isList = false;
+
+            var type = typeof(T);
+
+            if (type.IsArray)
+            {
+                isList = true;
+                type = type.GetElementType();
+            }
+            else if (type.IsGenericType)
+            {
+                var typeInfo = type.GetTypeInfo();
+                bool implementsGenericIEnumerableOrIsGenericIEnumerable =
+                    typeInfo.ImplementedInterfaces.Any(ti => ti.IsGenericType && ti.GetGenericTypeDefinition() == typeof(IEnumerable<>)) ||
+                    typeInfo.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+
+                if (implementsGenericIEnumerableOrIsGenericIEnumerable)
+                {
+                    isList = true;
+                    type = type.GetGenericArguments()[0];
+                }
+            }
+
+            var name = GetTableName(type);
+            var sbColumnList = new StringBuilder(null);
+            var allProperties = TypePropertiesCache(type);
+            var keyProperties = KeyPropertiesCache(type);
+            var computedProperties = ComputedPropertiesCache(type);
+            var allPropertiesExceptKeyAndComputed = allProperties.Except(keyProperties.Union(computedProperties)).Where(p => p.GetValue(entityToInsert) != null).ToList();
+
+            var adapter = GetFormatter(connection);
+
+            for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
+            {
+                var property = allPropertiesExceptKeyAndComputed[i];
+                //adapter.AppendColumnName(sbColumnList, property.Name);  //fix for issue #336
+                //hack property.Name Insert
+                adapter.AppendColumnName(sbColumnList, ColumnMapping.ColumnName(property.Name));  //fix for issue #336
+                if (i < allPropertiesExceptKeyAndComputed.Count - 1)
+                    sbColumnList.Append(", ");
+            }
+
+            var sbParameterList = new StringBuilder(null);
+            for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
+            {
+                var property = allPropertiesExceptKeyAndComputed[i];
+                //sbParameterList.AppendFormat("@{0}", property.Name);
+                //hack property.Name Insert
+                sbParameterList.AppendFormat("@{0}", ColumnMapping.ColumnName(property.Name));
+                if (i < allPropertiesExceptKeyAndComputed.Count - 1)
+                    sbParameterList.Append(", ");
+            }
+
+            int returnVal;
+            var wasClosed = connection.State == ConnectionState.Closed;
+            if (wasClosed) connection.Open();
+
+            if (!isList)    //single entity
+            {
+                returnVal = adapter.Insert(connection, transaction, commandTimeout, name, sbColumnList.ToString(),
+                    sbParameterList.ToString(), keyProperties, ColumnMapping.PascalCaseToSnakeCaseForEntityNonNullProperty(entityToInsert));
+            }
+            else
+            {
+                //insert list of entities
+                var cmd = $"insert into {name} ({sbColumnList}) values ({sbParameterList})";
+                returnVal = connection.Execute(cmd, ColumnMapping.PascalCaseToSnakeCaseForEntityNonNullProperty(entityToInsert), transaction, commandTimeout);
             }
             if (wasClosed) connection.Close();
             return returnVal;
@@ -442,7 +536,9 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < nonIdProps.Count; i++)
             {
                 var property = nonIdProps[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+                //adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+                //hack property.Name Update
+                adapter.AppendColumnNameEqualsValue(sb, ColumnMapping.ColumnName(property.Name));  //fix for issue #336
                 if (i < nonIdProps.Count - 1)
                     sb.Append(", ");
             }
@@ -450,11 +546,89 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < keyProperties.Count; i++)
             {
                 var property = keyProperties[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+                //adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+                //hack property.Name Update
+                adapter.AppendColumnNameEqualsValue(sb, ColumnMapping.ColumnName(property.Name));  //fix for issue #336
                 if (i < keyProperties.Count - 1)
                     sb.Append(" and ");
             }
-            var updated = connection.Execute(sb.ToString(), entityToUpdate, commandTimeout: commandTimeout, transaction: transaction);
+            var updated = connection.Execute(sb.ToString(), ColumnMapping.PascalCaseToSnakeCaseForEntity(entityToUpdate), commandTimeout: commandTimeout, transaction: transaction);
+            return updated > 0;
+        }
+
+        /// <summary>
+        /// Update entity(NonNull properties) in table "Ts", checks if the entity is modified if the entity is tracked by the Get() extension.
+        /// </summary>
+        /// <typeparam name="T">Type to be updated</typeparam>
+        /// <param name="connection">Open SqlConnection</param>
+        /// <param name="entityToUpdate">Entity to be updated</param>
+        /// <param name="transaction">The transaction to run under, null (the default) if none</param>
+        /// <param name="commandTimeout">Number of seconds before command execution timeout</param>
+        /// <returns>true if updated, false if not found or not modified (tracked entities)</returns>
+        public static bool UpdateNonNull<T>(this IDbConnection connection, T entityToUpdate, IDbTransaction transaction = null, int? commandTimeout = null) where T : class
+        {
+            if (entityToUpdate is IProxy proxy && !proxy.IsDirty)
+            {
+                return false;
+            }
+
+            var type = typeof(T);
+
+            if (type.IsArray)
+            {
+                type = type.GetElementType();
+            }
+            else if (type.IsGenericType)
+            {
+                var typeInfo = type.GetTypeInfo();
+                bool implementsGenericIEnumerableOrIsGenericIEnumerable =
+                    typeInfo.ImplementedInterfaces.Any(ti => ti.IsGenericType && ti.GetGenericTypeDefinition() == typeof(IEnumerable<>)) ||
+                    typeInfo.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+
+                if (implementsGenericIEnumerableOrIsGenericIEnumerable)
+                {
+                    type = type.GetGenericArguments()[0];
+                }
+            }
+
+            var keyProperties = KeyPropertiesCache(type).ToList();  //added ToList() due to issue #418, must work on a list copy
+            var explicitKeyProperties = ExplicitKeyPropertiesCache(type);
+            if (keyProperties.Count == 0 && explicitKeyProperties.Count == 0)
+                throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
+
+            var name = GetTableName(type);
+
+            var sb = new StringBuilder();
+            sb.AppendFormat("update {0} set ", name);
+
+            var allProperties = TypePropertiesCache(type);
+            keyProperties.AddRange(explicitKeyProperties);
+            var computedProperties = ComputedPropertiesCache(type);
+            var nonIdProps = allProperties.Except(keyProperties.Union(computedProperties)).ToList();
+
+            var adapter = GetFormatter(connection);
+
+            nonIdProps = nonIdProps.Where(p => p.GetValue(entityToUpdate) != null).ToList();
+            for (var i = 0; i < nonIdProps.Count; i++)
+            {
+                var property = nonIdProps[i];
+                //adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+                //hack property.Name Update
+                adapter.AppendColumnNameEqualsValue(sb, ColumnMapping.ColumnName(property.Name));  //fix for issue #336
+                if (i < nonIdProps.Count - 1)
+                    sb.Append(", ");
+            }
+            sb.Append(" where ");
+            for (var i = 0; i < keyProperties.Count; i++)
+            {
+                var property = keyProperties[i];
+                //adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+                //hack property.Name Update
+                adapter.AppendColumnNameEqualsValue(sb, ColumnMapping.ColumnName(property.Name));  //fix for issue #336
+                if (i < keyProperties.Count - 1)
+                    sb.Append(" and ");
+            }
+            var updated = connection.Execute(sb.ToString(), ColumnMapping.PascalCaseToSnakeCaseForEntityNonNullProperty(entityToUpdate), commandTimeout: commandTimeout, transaction: transaction);
             return updated > 0;
         }
 
@@ -507,11 +681,13 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < keyProperties.Count; i++)
             {
                 var property = keyProperties[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+                //adapter.AppendColumnNameEqualsValue(sb, property.Name);  //fix for issue #336
+                //hack property.Name Delete
+                adapter.AppendColumnNameEqualsValue(sb, ColumnMapping.ColumnName(property.Name));  //fix for issue #336
                 if (i < keyProperties.Count - 1)
                     sb.Append(" and ");
             }
-            var deleted = connection.Execute(sb.ToString(), entityToDelete, transaction, commandTimeout);
+            var deleted = connection.Execute(sb.ToString(), ColumnMapping.PascalCaseToSnakeCaseForEntity(entityToDelete), transaction, commandTimeout);
             return deleted > 0;
         }
 
@@ -1005,7 +1181,9 @@ public partial class PostgresAdapter : ISqlAdapter
                 if (!first)
                     sb.Append(", ");
                 first = false;
-                sb.Append(property.Name);
+                //sb.Append(property.Name);
+                //hack property.Name Insert
+                sb.Append(ColumnMapping.ColumnName(property.Name));
             }
         }
 
@@ -1016,7 +1194,7 @@ public partial class PostgresAdapter : ISqlAdapter
         foreach (var p in propertyInfos)
         {
             var value = ((IDictionary<string, object>)results[0])[p.Name.ToLower()];
-            p.SetValue(entityToInsert, value, null);
+            //p.SetValue(entityToInsert, value, null);
             if (id == 0)
                 id = Convert.ToInt32(value);
         }

@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using Dapper;
+using Dapper.Contrib;
 
 namespace Dapper.Contrib.Extensions
 {
@@ -30,7 +31,9 @@ namespace Dapper.Contrib.Extensions
                 var key = GetSingleKey<T>(nameof(GetAsync));
                 var name = GetTableName(type);
 
-                sql = $"SELECT * FROM {name} WHERE {key.Name} = @id";
+                //sql = $"SELECT * FROM {name} WHERE {key.Name} = @id";
+                // hack sql GetAsync
+                sql = $"SELECT * FROM {name} WHERE {ColumnMapping.ColumnName(key.Name)} = @id";
                 GetQueries[type.TypeHandle] = sql;
             }
 
@@ -49,7 +52,9 @@ namespace Dapper.Contrib.Extensions
 
             foreach (var property in TypePropertiesCache(type))
             {
-                var val = res[property.Name];
+                //var val = res[property.Name];
+                // hack property.Name GetAsync
+                var val = res[ColumnMapping.ColumnName(property.Name)];
                 if (val == null) continue;
                 if (property.PropertyType.IsGenericType && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
                 {
@@ -108,7 +113,9 @@ namespace Dapper.Contrib.Extensions
                 var obj = ProxyGenerator.GetInterfaceProxy<T>();
                 foreach (var property in TypePropertiesCache(type))
                 {
-                    var val = res[property.Name];
+                    //var val = res[property.Name];
+                    //hack property.Name GetAllAsyncImpl
+                    var val = res[ColumnMapping.ColumnName(property.Name)];
                     if (val == null) continue;
                     if (property.PropertyType.IsGenericType && property.PropertyType.GetGenericTypeDefinition() == typeof(Nullable<>))
                     {
@@ -172,7 +179,9 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
             {
                 var property = allPropertiesExceptKeyAndComputed[i];
-                sqlAdapter.AppendColumnName(sbColumnList, property.Name);
+                //sqlAdapter.AppendColumnName(sbColumnList, property.Name);
+                //hack property.Name InsertAsync
+                sqlAdapter.AppendColumnName(sbColumnList, ColumnMapping.ColumnName(property.Name));
                 if (i < allPropertiesExceptKeyAndComputed.Count - 1)
                     sbColumnList.Append(", ");
             }
@@ -181,7 +190,9 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
             {
                 var property = allPropertiesExceptKeyAndComputed[i];
-                sbParameterList.AppendFormat("@{0}", property.Name);
+                //sbParameterList.AppendFormat("@{0}", property.Name);
+                //hack property.Name InsertAsync
+                sbParameterList.AppendFormat("@{0}", ColumnMapping.ColumnName(property.Name));
                 if (i < allPropertiesExceptKeyAndComputed.Count - 1)
                     sbParameterList.Append(", ");
             }
@@ -189,12 +200,87 @@ namespace Dapper.Contrib.Extensions
             if (!isList)    //single entity
             {
                 return sqlAdapter.InsertAsync(connection, transaction, commandTimeout, name, sbColumnList.ToString(),
-                    sbParameterList.ToString(), keyProperties, entityToInsert);
+                    sbParameterList.ToString(), keyProperties, ColumnMapping.PascalCaseToSnakeCaseForEntity(entityToInsert));
             }
 
             //insert list of entities
             var cmd = $"INSERT INTO {name} ({sbColumnList}) values ({sbParameterList})";
-            return connection.ExecuteAsync(cmd, entityToInsert, transaction, commandTimeout);
+            return connection.ExecuteAsync(cmd, ColumnMapping.PascalCaseToSnakeCaseForEntity(entityToInsert), transaction, commandTimeout);
+        }
+
+        /// <summary>
+        /// Inserts an entity(NonNull properties) into table "Ts" asynchronously using Task and returns identity id.
+        /// </summary>
+        /// <typeparam name="T">The type being inserted.</typeparam>
+        /// <param name="connection">Open SqlConnection</param>
+        /// <param name="entityToInsert">Entity to insert</param>
+        /// <param name="transaction">The transaction to run under, null (the default) if none</param>
+        /// <param name="commandTimeout">Number of seconds before command execution timeout</param>
+        /// <param name="sqlAdapter">The specific ISqlAdapter to use, auto-detected based on connection if null</param>
+        /// <returns>Identity of inserted entity</returns>
+        public static Task<int> InsertNonNullAsync<T>(this IDbConnection connection, T entityToInsert, IDbTransaction transaction = null,
+            int? commandTimeout = null, ISqlAdapter sqlAdapter = null) where T : class
+        {
+            var type = typeof(T);
+            sqlAdapter ??= GetFormatter(connection);
+
+            var isList = false;
+            if (type.IsArray)
+            {
+                isList = true;
+                type = type.GetElementType();
+            }
+            else if (type.IsGenericType)
+            {
+                var typeInfo = type.GetTypeInfo();
+                bool implementsGenericIEnumerableOrIsGenericIEnumerable =
+                    typeInfo.ImplementedInterfaces.Any(ti => ti.IsGenericType && ti.GetGenericTypeDefinition() == typeof(IEnumerable<>)) ||
+                    typeInfo.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+
+                if (implementsGenericIEnumerableOrIsGenericIEnumerable)
+                {
+                    isList = true;
+                    type = type.GetGenericArguments()[0];
+                }
+            }
+
+            var name = GetTableName(type);
+            var sbColumnList = new StringBuilder(null);
+            var allProperties = TypePropertiesCache(type);
+            var keyProperties = KeyPropertiesCache(type).ToList();
+            var computedProperties = ComputedPropertiesCache(type);
+            var allPropertiesExceptKeyAndComputed = allProperties.Except(keyProperties.Union(computedProperties)).Where(p => p.GetValue(entityToInsert) != null).ToList();
+
+            for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
+            {
+                var property = allPropertiesExceptKeyAndComputed[i];
+                //sqlAdapter.AppendColumnName(sbColumnList, property.Name);
+                //hack property.Name InsertAsync
+                sqlAdapter.AppendColumnName(sbColumnList, ColumnMapping.ColumnName(property.Name));
+                if (i < allPropertiesExceptKeyAndComputed.Count - 1)
+                    sbColumnList.Append(", ");
+            }
+
+            var sbParameterList = new StringBuilder(null);
+            for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count; i++)
+            {
+                var property = allPropertiesExceptKeyAndComputed[i];
+                //sbParameterList.AppendFormat("@{0}", property.Name);
+                //hack property.Name InsertAsync
+                sbParameterList.AppendFormat("@{0}", ColumnMapping.ColumnName(property.Name));
+                if (i < allPropertiesExceptKeyAndComputed.Count - 1)
+                    sbParameterList.Append(", ");
+            }
+
+            if (!isList)    //single entity
+            {
+                return sqlAdapter.InsertAsync(connection, transaction, commandTimeout, name, sbColumnList.ToString(),
+                    sbParameterList.ToString(), keyProperties, ColumnMapping.PascalCaseToSnakeCaseForEntityNonNullProperty(entityToInsert));
+            }
+
+            //insert list of entities
+            var cmd = $"INSERT INTO {name} ({sbColumnList}) values ({sbParameterList})";
+            return connection.ExecuteAsync(cmd, ColumnMapping.PascalCaseToSnakeCaseForEntityNonNullProperty(entityToInsert), transaction, commandTimeout);
         }
 
         /// <summary>
@@ -252,7 +338,9 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < nonIdProps.Count; i++)
             {
                 var property = nonIdProps[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                //adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                //hack property.Name UpdateAsync
+                adapter.AppendColumnNameEqualsValue(sb, ColumnMapping.ColumnName(property.Name));
                 if (i < nonIdProps.Count - 1)
                     sb.Append(", ");
             }
@@ -260,11 +348,89 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < keyProperties.Count; i++)
             {
                 var property = keyProperties[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                //adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                //hack property.Name UpdateAsync
+                adapter.AppendColumnNameEqualsValue(sb, ColumnMapping.ColumnName(property.Name));
                 if (i < keyProperties.Count - 1)
                     sb.Append(" and ");
             }
-            var updated = await connection.ExecuteAsync(sb.ToString(), entityToUpdate, commandTimeout: commandTimeout, transaction: transaction).ConfigureAwait(false);
+            var updated = await connection.ExecuteAsync(sb.ToString(), ColumnMapping.PascalCaseToSnakeCaseForEntity(entityToUpdate), commandTimeout: commandTimeout, transaction: transaction).ConfigureAwait(false);
+            return updated > 0;
+        }
+
+        /// <summary>
+        /// Update entity(NonNull properties) in table "Ts" asynchronously using Task, checks if the entity is modified if the entity is tracked by the Get() extension.
+        /// </summary>
+        /// <typeparam name="T">Type to be updated</typeparam>
+        /// <param name="connection">Open SqlConnection</param>
+        /// <param name="entityToUpdate">Entity to be updated</param>
+        /// <param name="transaction">The transaction to run under, null (the default) if none</param>
+        /// <param name="commandTimeout">Number of seconds before command execution timeout</param>
+        /// <returns>true if updated, false if not found or not modified (tracked entities)</returns>
+        public static async Task<bool> UpdateNonNullAsync<T>(this IDbConnection connection, T entityToUpdate, IDbTransaction transaction = null, int? commandTimeout = null) where T : class
+        {
+            if ((entityToUpdate is IProxy proxy) && !proxy.IsDirty)
+            {
+                return false;
+            }
+
+            var type = typeof(T);
+
+            if (type.IsArray)
+            {
+                type = type.GetElementType();
+            }
+            else if (type.IsGenericType)
+            {
+                var typeInfo = type.GetTypeInfo();
+                bool implementsGenericIEnumerableOrIsGenericIEnumerable =
+                    typeInfo.ImplementedInterfaces.Any(ti => ti.IsGenericType && ti.GetGenericTypeDefinition() == typeof(IEnumerable<>)) ||
+                    typeInfo.GetGenericTypeDefinition() == typeof(IEnumerable<>);
+
+                if (implementsGenericIEnumerableOrIsGenericIEnumerable)
+                {
+                    type = type.GetGenericArguments()[0];
+                }
+            }
+
+            var keyProperties = KeyPropertiesCache(type).ToList();
+            var explicitKeyProperties = ExplicitKeyPropertiesCache(type);
+            if (keyProperties.Count == 0 && explicitKeyProperties.Count == 0)
+                throw new ArgumentException("Entity must have at least one [Key] or [ExplicitKey] property");
+
+            var name = GetTableName(type);
+
+            var sb = new StringBuilder();
+            sb.AppendFormat("update {0} set ", name);
+
+            var allProperties = TypePropertiesCache(type);
+            keyProperties.AddRange(explicitKeyProperties);
+            var computedProperties = ComputedPropertiesCache(type);
+            var nonIdProps = allProperties.Except(keyProperties.Union(computedProperties)).ToList();
+
+            var adapter = GetFormatter(connection);
+
+            nonIdProps = nonIdProps.Where(p => p.GetValue(entityToUpdate) != null).ToList();
+            for (var i = 0; i < nonIdProps.Count; i++)
+            {
+                var property = nonIdProps[i];
+                //adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                //hack property.Name UpdateAsync
+                adapter.AppendColumnNameEqualsValue(sb, ColumnMapping.ColumnName(property.Name));
+                if (i < nonIdProps.Count - 1)
+                    sb.Append(", ");
+            }
+            sb.Append(" where ");
+            for (var i = 0; i < keyProperties.Count; i++)
+            {
+                var property = keyProperties[i];
+                //adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                //hack property.Name UpdateAsync
+                adapter.AppendColumnNameEqualsValue(sb, ColumnMapping.ColumnName(property.Name));
+                if (i < keyProperties.Count - 1)
+                    sb.Append(" and ");
+            }
+            var updated = await connection.ExecuteAsync(sb.ToString(), ColumnMapping.PascalCaseToSnakeCaseForEntityNonNullProperty(entityToUpdate), commandTimeout: commandTimeout, transaction: transaction).ConfigureAwait(false);
             return updated > 0;
         }
 
@@ -317,11 +483,13 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < allKeyProperties.Count; i++)
             {
                 var property = allKeyProperties[i];
-                adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                //adapter.AppendColumnNameEqualsValue(sb, property.Name);
+                //hack property.Name DeleteAsync
+                adapter.AppendColumnNameEqualsValue(sb, ColumnMapping.ColumnName(property.Name));
                 if (i < allKeyProperties.Count - 1)
                     sb.Append(" AND ");
             }
-            var deleted = await connection.ExecuteAsync(sb.ToString(), entityToDelete, transaction, commandTimeout).ConfigureAwait(false);
+            var deleted = await connection.ExecuteAsync(sb.ToString(), ColumnMapping.PascalCaseToSnakeCaseForEntity(entityToDelete), transaction, commandTimeout).ConfigureAwait(false);
             return deleted > 0;
         }
 
@@ -493,7 +661,9 @@ public partial class PostgresAdapter
                 if (!first)
                     sb.Append(", ");
                 first = false;
-                sb.Append(property.Name);
+                //sb.Append(property.Name);
+                //hack property.Name InsertAsync
+                sb.Append(ColumnMapping.ColumnName(property.Name));
             }
         }
 
@@ -504,7 +674,7 @@ public partial class PostgresAdapter
         foreach (var p in propertyInfos)
         {
             var value = ((IDictionary<string, object>)results.First())[p.Name.ToLower()];
-            p.SetValue(entityToInsert, value, null);
+            //p.SetValue(entityToInsert, value, null);
             if (id == 0)
                 id = Convert.ToInt32(value);
         }
