@@ -555,7 +555,7 @@ public partial class SqlServerAdapter
         if (pi.Length == 0) return id;
 
         var idp = pi[0];
-        idp.SetValue(entityToInsert, Convert.ChangeType(id, idp.PropertyType), null);
+        //idp.SetValue(entityToInsert, Convert.ChangeType(id, idp.PropertyType), null);
 
         return id;
     }
@@ -588,7 +588,7 @@ public partial class SqlCeServerAdapter
         if (pi.Length == 0) return id;
 
         var idp = pi[0];
-        idp.SetValue(entityToInsert, Convert.ChangeType(id, idp.PropertyType), null);
+        //idp.SetValue(entityToInsert, Convert.ChangeType(id, idp.PropertyType), null);
 
         return id;
     }
@@ -621,7 +621,7 @@ public partial class MySqlAdapter
         if (pi.Length == 0) return Convert.ToInt32(id);
 
         var idp = pi[0];
-        idp.SetValue(entityToInsert, Convert.ChangeType(id, idp.PropertyType), null);
+        //idp.SetValue(entityToInsert, Convert.ChangeType(id, idp.PropertyType), null);
 
         return Convert.ToInt32(id);
     }
@@ -706,7 +706,7 @@ public partial class SQLiteAdapter
         if (pi.Length == 0) return id;
 
         var idp = pi[0];
-        idp.SetValue(entityToInsert, Convert.ChangeType(id, idp.PropertyType), null);
+        //idp.SetValue(entityToInsert, Convert.ChangeType(id, idp.PropertyType), null);
 
         return id;
     }
@@ -740,7 +740,7 @@ public partial class FbAdapter
         if (propertyInfos.Length == 0) return Convert.ToInt32(id);
 
         var idp = propertyInfos[0];
-        idp.SetValue(entityToInsert, Convert.ChangeType(id, idp.PropertyType), null);
+        //idp.SetValue(entityToInsert, Convert.ChangeType(id, idp.PropertyType), null);
 
         return Convert.ToInt32(id);
     }
